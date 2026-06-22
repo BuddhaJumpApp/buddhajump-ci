@@ -1,0 +1,157 @@
+name: build-apple
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+
+permissions:
+  contents: write
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        required: true
+        type: string
+        description: 'App name'
+      pkg:
+        required: true
+        type: string
+        description: 'Package name'
+      version:
+        required: true
+        type: string
+        description: 'Version to build'
+
+jobs:
+  build-apple-app:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        platform: [ios, macos]
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.ORG_TOKEN }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            ${{ env.FLUTTER_HOME }}/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Set build environment
+        run: |
+          set -xeuo pipefail
+          echo "BUILD_VERSION=${{ inputs.version }}" >> "${GITHUB_ENV}"
+      - name: Install Flutter dependencies
+        run: |
+          flutter pub get
+
+      - name: Check Flutter version
+        run: |
+          flutter --version
+
+      - name: Setup keychain and certificates
+        run: |
+          APPLE_PKCS12_PATH=$RUNNER_TEMP/Certificates.p12
+          APPLE_KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $APPLE_KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $APPLE_KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $APPLE_KEYCHAIN_PATH
+          echo -n "${{ secrets.APPLE_PKCS12_BASE64 }}" | base64 -d -o $APPLE_PKCS12_PATH
+          security import $APPLE_PKCS12_PATH -P "${{ secrets.APPLE_PKCS12_PASSWORD }}" -A -t cert -f pkcs12 -k $APPLE_KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $APPLE_KEYCHAIN_PATH
+          security list-keychain -d user -s $APPLE_KEYCHAIN_PATH
+
+      - name: Install provisioning profiles
+        run: |
+          APPLE_PROVISIONING_PATH="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$APPLE_PROVISIONING_PATH"
+          echo -n "${{ secrets.APPLE_PROVISIONING_BASE64 }}" | base64 -d | tar -xJf - -C "$APPLE_PROVISIONING_PATH"
+
+      - name: Build ${{ matrix.platform }} app
+        run: |
+          set -xeuo pipefail
+          echo "Building ${{ inputs.name }} ${{ inputs.version }} (Release Mode)"
+          rm -rf .dart_tool build/${{ matrix.platform }} ${{ matrix.platform }}/.Pods
+          flutter gen-l10n
+          flutter pub run flutter_launcher_icons
+
+          if [ "${{ matrix.platform }}" == "ios" ]; then
+            flutter build ipa --release \
+                --obfuscate \
+                --split-debug-info=debug-info/ios \
+                --suppress-analytics \
+                --no-tree-shake-icons \
+                --export-options-plist=ios/ExportOptions.plist
+            mv build/ios/ipa/*.ipa "build/ios/ipa/${{ inputs.name }}-${{ inputs.version }}.ipa"
+            echo "UPLOAD_FILE=build/ios/ipa/${{ inputs.name }}-${{ inputs.version }}.ipa" >> "$GITHUB_ENV"
+          else
+            flutter build macos --release \
+                --obfuscate \
+                --split-debug-info=debug-info/macos \
+                --suppress-analytics \
+                --no-tree-shake-icons
+            APP_PATH=$(ls -d build/macos/Build/Products/Release/*.app)
+            PKG_PATH="build/macos/${{ inputs.name }}-${{ inputs.version }}.pkg"
+            INSTALLER_CERT=$(security find-identity -v -p basic | grep "3rd Party Mac Developer Installer" | head -1 | awk -F'"' '{print $2}')
+            productbuild --component "$APP_PATH" /Applications --sign "$INSTALLER_CERT" "$PKG_PATH"
+            echo "UPLOAD_FILE=$PKG_PATH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db
+          rm -rf "$HOME/Library/MobileDevice/Provisioning Profiles"
+
+      - name: Setup App Store Connect API Key
+        run: |
+          mkdir -p ~/private_keys
+          echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+
+      - name: Upload to App Store Connect
+        id: publish
+        continue-on-error: true
+        run: |
+          PLATFORM_TYPE=${{ matrix.platform == 'ios' && 'ios' || 'osx' }}
+          xcrun altool --upload-app \
+            --type $PLATFORM_TYPE \
+            --file "$UPLOAD_FILE" \
+            --apiKey "${{ secrets.APPLE_API_KEY_ID }}" \
+            --apiIssuer "${{ secrets.APPLE_API_ISSUER_ID }}"
+
+      - name: Upload to GitHub release (App Store upload failed)
+        if: steps.publish.outcome == 'failure'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: ${{ env.UPLOAD_FILE }}
+
+      - name: Clean up API key
+        if: always()
+        run: rm -rf ~/private_keys

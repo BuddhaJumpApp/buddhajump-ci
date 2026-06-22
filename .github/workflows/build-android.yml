@@ -1,0 +1,143 @@
+name: build-android
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+
+permissions:
+  contents: write
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        required: true
+        type: string
+        description: 'App name'
+      pkg:
+        required: true
+        type: string
+        description: 'Package name'
+      version:
+        required: true
+        type: string
+        description: 'Version to build'
+
+jobs:
+  build-android-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.ORG_TOKEN }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            ${{ env.FLUTTER_HOME }}/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Set build environment
+        id: build-env
+        run: |
+          set -xeuo pipefail
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          IFS='.' read -r a b c <<< "$VERSION"
+          BUILD_NUMBER=$((a * 100 + b * 10 + c))
+          sed -i "s/^version: .*/version: ${VERSION}+${BUILD_NUMBER}/" pubspec.yaml
+          echo "build_number=${BUILD_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Install Flutter dependencies
+        run: |
+          flutter pub get
+
+      - name: Check Flutter version
+        run: |
+          flutter --version
+
+      - name: Setup Android signing
+        run: |
+          echo "${{ secrets.PKCS12_BASE64 }}" | base64 -d > android/app/${{ secrets.PKCS12_NAME }}-keystore.jks
+          cat > android/key.properties << EOF
+          storePassword=${{ secrets.PKCS12_PASSWORD }}
+          keyPassword=${{ secrets.PKCS12_PASSWORD }}
+          keyAlias=${{ secrets.PKCS12_NAME }}
+          storeFile=${{ secrets.PKCS12_NAME }}-keystore.jks
+          EOF
+
+      - name: Build Android App Bundle and APK
+        run: |
+          set -xeuo pipefail
+          echo "Building ${{ inputs.name }} ${{ inputs.version }} (Release Mode)"
+          rm -rf .dart_tool android/.gradle
+          flutter gen-l10n
+          flutter pub run flutter_launcher_icons
+
+          flutter build appbundle --release \
+              --obfuscate \
+              --split-debug-info=debug-info/android \
+              --suppress-analytics \
+              --no-tree-shake-icons
+          mv build/app/outputs/bundle/release/app-release.aab \
+             "${{ inputs.name }}-android-${{ inputs.version }}.aab"
+
+          flutter build apk --release \
+              --obfuscate \
+              --split-debug-info=debug-info/android \
+              --suppress-analytics \
+              --no-tree-shake-icons
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             "${{ inputs.name }}-android-universal-${{ inputs.version }}.apk"
+
+      - name: Decode Google Play service account
+        run: echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_BASE64 }}" | base64 -d > service-account.json
+
+      - name: Upload to Google Play Store
+        id: publish
+        continue-on-error: true
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: service-account.json
+          packageName: ${{ inputs.pkg }}
+          releaseFiles: ${{ inputs.name }}-android-${{ inputs.version }}.aab
+          track: production
+          status: completed
+
+      - name: Upload APK to GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: ${{ inputs.name }}-android-universal-${{ inputs.version }}.apk
+
+      - name: Upload AAB to GitHub release (Play Store upload failed)
+        if: steps.publish.outcome == 'failure'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          draft: false
+          prerelease: false
+          files: ${{ inputs.name }}-android-${{ inputs.version }}.aab
