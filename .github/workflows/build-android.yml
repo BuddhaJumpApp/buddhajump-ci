@@ -61,6 +61,7 @@ jobs:
           set -xeuo pipefail
           VERSION="${{ inputs.version }}"
           VERSION="${VERSION#v}"
+          VERSION="${VERSION%%+*}"   # strip any existing +build suffix; we append our own
           IFS='.' read -r a b c <<< "$VERSION"
           BUILD_NUMBER=$((a * 100 + b * 10 + c))
           sed -i "s/^version: .*/version: ${VERSION}+${BUILD_NUMBER}/" pubspec.yaml
