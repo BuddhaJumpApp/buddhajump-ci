@@ -31,7 +31,12 @@ on:
         required: false
         default: false
         type: boolean
-        description: 'Upload ONLY the iOS build to TestFlight. Does not enable the macOS .pkg path, which needs a Mac Installer Distribution certificate this repo does not hold.'
+        description: 'Upload ONLY the iOS build to TestFlight.'
+      publish_macos_testflight:
+        required: false
+        default: false
+        type: boolean
+        description: 'Upload ONLY the macOS build to TestFlight. Requires APPLE_INSTALLER_PKCS12_BASE64/_PASSWORD (Mac Installer Distribution identity) — productbuild cannot sign the .pkg without it.'
 
 jobs:
   build-apple-app:
@@ -90,6 +95,17 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $APPLE_KEYCHAIN_PATH
           echo -n "${{ secrets.APPLE_PKCS12_BASE64 }}" | base64 -d -o $APPLE_PKCS12_PATH
           security import $APPLE_PKCS12_PATH -P "${{ secrets.APPLE_PKCS12_PASSWORD }}" -A -t cert -f pkcs12 -k $APPLE_KEYCHAIN_PATH
+          # Mac Installer Distribution identity — a SEPARATE certificate from the
+          # app-signing one above. productbuild needs it to sign the .pkg that
+          # macOS TestFlight/App Store submissions require. Kept as its own
+          # secret so it can be renewed independently (it expires 2027-07-29)
+          # without rotating the app-signing credential that already works.
+          # Optional: skipped when unset, so builds that don't sign a pkg still run.
+          if [ -n "${{ secrets.APPLE_INSTALLER_PKCS12_BASE64 }}" ]; then
+            APPLE_INSTALLER_PKCS12_PATH=$RUNNER_TEMP/InstallerCertificate.p12
+            echo -n "${{ secrets.APPLE_INSTALLER_PKCS12_BASE64 }}" | base64 -d -o $APPLE_INSTALLER_PKCS12_PATH
+            security import $APPLE_INSTALLER_PKCS12_PATH -P "${{ secrets.APPLE_INSTALLER_PKCS12_PASSWORD }}" -A -t cert -f pkcs12 -k $APPLE_KEYCHAIN_PATH
+          fi
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $APPLE_KEYCHAIN_PATH
           security list-keychain -d user -s $APPLE_KEYCHAIN_PATH
 
@@ -123,7 +139,7 @@ jobs:
                 --suppress-analytics \
                 --no-tree-shake-icons
             APP_PATH=$(ls -d build/macos/Build/Products/Release/*.app)
-            if [ "${{ inputs.publish_to_stores }}" == "true" ]; then
+            if [ "${{ inputs.publish_to_stores }}" == "true" ] || [ "${{ inputs.publish_macos_testflight }}" == "true" ]; then
               PKG_PATH="build/macos/${{ inputs.name }}-${{ inputs.version }}.pkg"
               INSTALLER_CERT=$(security find-identity -v -p basic | grep "3rd Party Mac Developer Installer" | head -1 | awk -F'"' '{print $2}' || true)
               test -n "$INSTALLER_CERT"
@@ -143,14 +159,14 @@ jobs:
           rm -rf "$HOME/Library/MobileDevice/Provisioning Profiles"
 
       - name: Setup App Store Connect API Key
-        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios')
+        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios') || (inputs.publish_macos_testflight && matrix.platform == 'macos')
         run: |
           mkdir -p ~/private_keys
           echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
 
       - name: Upload to App Store Connect
-        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios')
+        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios') || (inputs.publish_macos_testflight && matrix.platform == 'macos')
         id: publish
         continue-on-error: true
         run: |
@@ -173,5 +189,5 @@ jobs:
           files: ${{ env.UPLOAD_FILE }}
 
       - name: Clean up API key
-        if: always() && (inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios'))
+        if: always() && (inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios') || (inputs.publish_macos_testflight && matrix.platform == 'macos'))
         run: rm -rf ~/private_keys
