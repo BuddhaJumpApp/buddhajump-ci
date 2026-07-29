@@ -62,7 +62,6 @@ jobs:
       version: ${{ needs.check-for-version.outputs.version }}
       build_store_package: ${{ github.event_name == 'workflow_dispatch' && inputs.build_windows_store_package || false }}
       publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
-      publish_ios_testflight: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ios_testflight || false }}
     secrets: inherit
 
   build-android:
