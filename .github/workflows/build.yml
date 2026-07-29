@@ -11,6 +11,17 @@ on:
   repository_dispatch:
     types: [pubspec-updated]
   workflow_dispatch:
+    inputs:
+      publish_to_stores:
+        description: 'Publish signed builds to the store accounts'
+        required: false
+        default: false
+        type: boolean
+      build_windows_store_package:
+        description: 'Build the Microsoft Store MSIX without publishing it'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   check-for-version:
@@ -44,6 +55,8 @@ jobs:
       name: ${{ needs.check-for-version.outputs.name }}
       pkg: ${{ needs.check-for-version.outputs.pkg }}
       version: ${{ needs.check-for-version.outputs.version }}
+      build_store_package: ${{ github.event_name == 'workflow_dispatch' && inputs.build_windows_store_package || false }}
+      publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
     secrets: inherit
 
   build-android:
@@ -62,4 +75,5 @@ jobs:
       name: ${{ needs.check-for-version.outputs.name }}
       pkg: ${{ needs.check-for-version.outputs.pkg }}
       version: ${{ needs.check-for-version.outputs.version }}
+      publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
     secrets: inherit

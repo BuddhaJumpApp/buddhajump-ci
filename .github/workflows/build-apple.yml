@@ -22,6 +22,11 @@ on:
         required: true
         type: string
         description: 'Version to build'
+      publish_to_stores:
+        required: false
+        default: false
+        type: boolean
+        description: 'Publish to the App Store Connect account'
 
 jobs:
   build-apple-app:
@@ -113,10 +118,17 @@ jobs:
                 --suppress-analytics \
                 --no-tree-shake-icons
             APP_PATH=$(ls -d build/macos/Build/Products/Release/*.app)
-            PKG_PATH="build/macos/${{ inputs.name }}-${{ inputs.version }}.pkg"
-            INSTALLER_CERT=$(security find-identity -v -p basic | grep "3rd Party Mac Developer Installer" | head -1 | awk -F'"' '{print $2}')
-            productbuild --component "$APP_PATH" /Applications --sign "$INSTALLER_CERT" "$PKG_PATH"
-            echo "UPLOAD_FILE=$PKG_PATH" >> "$GITHUB_ENV"
+            if [ "${{ inputs.publish_to_stores }}" == "true" ]; then
+              PKG_PATH="build/macos/${{ inputs.name }}-${{ inputs.version }}.pkg"
+              INSTALLER_CERT=$(security find-identity -v -p basic | grep "3rd Party Mac Developer Installer" | head -1 | awk -F'"' '{print $2}' || true)
+              test -n "$INSTALLER_CERT"
+              productbuild --component "$APP_PATH" /Applications --sign "$INSTALLER_CERT" "$PKG_PATH"
+              echo "UPLOAD_FILE=$PKG_PATH" >> "$GITHUB_ENV"
+            else
+              ZIP_PATH="build/macos/${{ inputs.name }}-macos-${{ inputs.version }}.zip"
+              ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+              echo "UPLOAD_FILE=$ZIP_PATH" >> "$GITHUB_ENV"
+            fi
           fi
 
       - name: Clean up keychain
@@ -126,12 +138,14 @@ jobs:
           rm -rf "$HOME/Library/MobileDevice/Provisioning Profiles"
 
       - name: Setup App Store Connect API Key
+        if: inputs.publish_to_stores
         run: |
           mkdir -p ~/private_keys
           echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
 
       - name: Upload to App Store Connect
+        if: inputs.publish_to_stores
         id: publish
         continue-on-error: true
         run: |
@@ -142,8 +156,8 @@ jobs:
             --apiKey "${{ secrets.APPLE_API_KEY_ID }}" \
             --apiIssuer "${{ secrets.APPLE_API_ISSUER_ID }}"
 
-      - name: Upload to GitHub release (App Store upload failed)
-        if: steps.publish.outcome == 'failure'
+      - name: Upload to GitHub release
+        if: ${{ !inputs.publish_to_stores || steps.publish.outcome == 'failure' }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.version }}
@@ -154,5 +168,5 @@ jobs:
           files: ${{ env.UPLOAD_FILE }}
 
       - name: Clean up API key
-        if: always()
+        if: always() && inputs.publish_to_stores
         run: rm -rf ~/private_keys

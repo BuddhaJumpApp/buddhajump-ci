@@ -23,6 +23,16 @@ on:
         required: true
         type: string
         description: 'Version to build'
+      build_store_package:
+        required: false
+        default: false
+        type: boolean
+        description: 'Build the unsigned Microsoft Store MSIX package'
+      publish_to_stores:
+        required: false
+        default: false
+        type: boolean
+        description: 'Publish to the Microsoft Partner Center account'
 
 jobs:
   build-windows-app:
@@ -36,10 +46,15 @@ jobs:
           repository: ${{ env.PRIVATE_REPO }}
           token: ${{ secrets.ORG_TOKEN }}
 
-      - uses: microsoft/microsoft-store-apppublisher@v1.3
-      - run: msstore reconfigure --tenantId ${{ secrets.PARTNER_TENANT }} --sellerId ${{ secrets.PARTNER_SELLER }} --clientId ${{ secrets.PARTNER_CLIENT }} --clientSecret ${{ secrets.PARTNER_SECRET }}
+      - name: Install Microsoft Store publisher CLI
+        if: inputs.build_store_package || inputs.publish_to_stores
+        uses: microsoft/microsoft-store-apppublisher@v1.3
+      - name: Reconfigure Microsoft Store account
+        if: inputs.build_store_package || inputs.publish_to_stores
+        run: msstore reconfigure --tenantId ${{ secrets.PARTNER_TENANT }} --sellerId ${{ secrets.PARTNER_SELLER }} --clientId ${{ secrets.PARTNER_CLIENT }} --clientSecret ${{ secrets.PARTNER_SECRET }}
 
       - name: Configure the Microsoft Store CLI
+        if: inputs.build_store_package || inputs.publish_to_stores
         shell: pwsh
         run: Install-Module -Name StoreBroker -Force
 
@@ -91,7 +106,25 @@ jobs:
             --suppress-analytics \
             --no-tree-shake-icons
 
+      - name: Archive portable Windows build
+        shell: pwsh
+        run: |
+          $archive = "${{ inputs.name }}-windows-amd64-${{ inputs.version }}.zip"
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath $archive -Force
+          "WINDOWS_ZIP=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload portable Windows build to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: ${{ env.WINDOWS_ZIP }}
+
       - name: Compose MSIX env
+        if: inputs.build_store_package || inputs.publish_to_stores
         shell: bash
         run: |
           set -xeuo pipefail
@@ -105,6 +138,7 @@ jobs:
           echo "MSIX_FILENAME=${MSIX_FILENAME}" >> "${GITHUB_ENV}"
 
       - name: Build MSIX package (Store)
+        if: inputs.build_store_package || inputs.publish_to_stores
         shell: bash
         run: |
           set -xeuo pipefail
@@ -123,18 +157,20 @@ jobs:
             --sign-msix false
 
       - name: Move Store MSIX
+        if: inputs.build_store_package || inputs.publish_to_stores
         shell: pwsh
         run: |
           Move-Item "build/windows/x64/runner/Release/*.msix" $env:MSIX_FILENAME
           Get-Item $env:MSIX_FILENAME | Select-Object Name, Length
 
       - name: Publish to Store
+        if: inputs.build_store_package || inputs.publish_to_stores
         id: publish
         continue-on-error: true
         run: msstore publish '${{ env.MSIX_FILENAME }}' -id ${{ secrets.PARTNER_STORE }}
 
       - name: Upload MSIX to release (Store publish failed)
-        if: steps.publish.outcome == 'failure'
+        if: (inputs.build_store_package || inputs.publish_to_stores) && steps.publish.outcome == 'failure'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.version }}
