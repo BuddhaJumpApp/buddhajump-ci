@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_ios_testflight:
+        description: 'Upload the iOS build to TestFlight (macOS pkg + Windows store steps stay off)'
+        required: false
+        default: false
+        type: boolean
       build_windows_store_package:
         description: 'Build the Microsoft Store MSIX without publishing it'
         required: false
@@ -57,6 +62,7 @@ jobs:
       version: ${{ needs.check-for-version.outputs.version }}
       build_store_package: ${{ github.event_name == 'workflow_dispatch' && inputs.build_windows_store_package || false }}
       publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
+      publish_ios_testflight: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ios_testflight || false }}
     secrets: inherit
 
   build-android:
@@ -76,4 +82,5 @@ jobs:
       pkg: ${{ needs.check-for-version.outputs.pkg }}
       version: ${{ needs.check-for-version.outputs.version }}
       publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
+      publish_ios_testflight: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ios_testflight || false }}
     secrets: inherit

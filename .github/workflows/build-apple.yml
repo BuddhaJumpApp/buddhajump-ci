@@ -27,6 +27,11 @@ on:
         default: false
         type: boolean
         description: 'Publish to the App Store Connect account'
+      publish_ios_testflight:
+        required: false
+        default: false
+        type: boolean
+        description: 'Upload ONLY the iOS build to TestFlight. Does not enable the macOS .pkg path, which needs a Mac Installer Distribution certificate this repo does not hold.'
 
 jobs:
   build-apple-app:
@@ -138,14 +143,14 @@ jobs:
           rm -rf "$HOME/Library/MobileDevice/Provisioning Profiles"
 
       - name: Setup App Store Connect API Key
-        if: inputs.publish_to_stores
+        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios')
         run: |
           mkdir -p ~/private_keys
           echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
 
       - name: Upload to App Store Connect
-        if: inputs.publish_to_stores
+        if: inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios')
         id: publish
         continue-on-error: true
         run: |
@@ -168,5 +173,5 @@ jobs:
           files: ${{ env.UPLOAD_FILE }}
 
       - name: Clean up API key
-        if: always() && inputs.publish_to_stores
+        if: always() && (inputs.publish_to_stores || (inputs.publish_ios_testflight && matrix.platform == 'ios'))
         run: rm -rf ~/private_keys
