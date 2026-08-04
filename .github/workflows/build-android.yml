@@ -120,7 +120,11 @@ jobs:
           serviceAccountJson: service-account.json
           packageName: ${{ inputs.pkg }}
           releaseFiles: ${{ inputs.name }}-android-${{ inputs.version }}.aab
-          track: production
+          # Internal testing, not production: these apps have never been through
+          # Play review, and a production+completed upload would publish them to
+          # everyone the moment it passed. Internal needs no store listing and
+          # installs straight onto allow-listed testers' devices.
+          track: internal
           status: completed
 
       - name: Upload APK to GitHub release
