@@ -77,6 +77,21 @@ jobs:
         run: |
           set -xeuo pipefail
           echo "BUILD_VERSION=${{ inputs.version }}" >> "${GITHUB_ENV}"
+          # Derive the build number exactly the way build-android.yml derives
+          # versionCode, so one release carries ONE number on all four
+          # platforms. Both Info.plists read $(FLUTTER_BUILD_NUMBER), which
+          # Flutter reads from pubspec, so rewriting pubspec is enough -- no
+          # need to thread --build-number through the ipa and macos commands.
+          # Without this the Apple side used whatever counter pubspec happened
+          # to carry, and 1.2.8 shipped as 128 on Android but 30 on iOS.
+          # NOTE: this job is macos-latest, so that is BSD sed -- `-i ''`.
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION%%+*}"
+          IFS='.' read -r a b c <<< "$VERSION"
+          BUILD_NUMBER=$((a * 100 + b * 10 + c))
+          sed -i '' "s/^version: .*/version: ${VERSION}+${BUILD_NUMBER}/" pubspec.yaml
+          echo "Apple build number: ${BUILD_NUMBER}"
       - name: Install Flutter dependencies
         run: |
           flutter pub get
