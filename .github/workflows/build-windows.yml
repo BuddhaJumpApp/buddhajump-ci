@@ -106,6 +106,25 @@ jobs:
             --suppress-analytics \
             --no-tree-shake-icons
 
+      - name: Bundle the VC++ runtime beside the exe
+        shell: pwsh
+        run: |
+          # flutter build windows links against the VC++ runtime but does not
+          # copy it. Machines with Visual Studio have the DLLs globally, so
+          # this only ever failed on end-user PCs ("VCRUNTIME140_1.dll was
+          # not found" on launch; sometimes reported one level up as a
+          # missing plugin DLL). Ship the three DLLs beside the exe.
+          $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -Directory |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $crt) { throw "VC++ redist directory not found on the runner" }
+          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
+            Copy-Item (Join-Path $crt.FullName $dll) "build/windows/x64/runner/Release/"
+          }
+          Get-ChildItem "build/windows/x64/runner/Release/msvcp140.dll",
+            "build/windows/x64/runner/Release/vcruntime140.dll",
+            "build/windows/x64/runner/Release/vcruntime140_1.dll" |
+            ForEach-Object { "bundled: $($_.Name)" }
+
       - name: Archive portable Windows build
         shell: pwsh
         run: |
