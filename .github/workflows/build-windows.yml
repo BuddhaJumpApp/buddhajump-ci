@@ -114,16 +114,29 @@ jobs:
           # this only ever failed on end-user PCs ("VCRUNTIME140_1.dll was
           # not found" on launch; sometimes reported one level up as a
           # missing plugin DLL). Ship the three DLLs beside the exe.
-          $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -Directory |
-            Sort-Object FullName | Select-Object -Last 1
-          if (-not $crt) { throw "VC++ redist directory not found on the runner" }
-          foreach ($dll in "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll") {
-            Copy-Item (Join-Path $crt.FullName $dll) "build/windows/x64/runner/Release/"
+          #
+          # vswhere is the only install-path oracle Microsoft guarantees —
+          # a hard-coded "...\2022\..." path already broke once when the
+          # runner image moved. System32 is the fallback: the runtime is
+          # installed system-wide on every runner.
+          $dlls = "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"
+          $dest = "build/windows/x64/runner/Release"
+          $src = "$env:SystemRoot\System32"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * -property installationPath
+            if ($vs) {
+              $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" `
+                -Directory -ErrorAction SilentlyContinue |
+                Sort-Object FullName | Select-Object -Last 1
+              if ($crt) { $src = $crt.FullName }
+            }
           }
-          Get-ChildItem "build/windows/x64/runner/Release/msvcp140.dll",
-            "build/windows/x64/runner/Release/vcruntime140.dll",
-            "build/windows/x64/runner/Release/vcruntime140_1.dll" |
-            ForEach-Object { "bundled: $($_.Name)" }
+          foreach ($dll in $dlls) {
+            Copy-Item (Join-Path $src $dll) $dest
+            if (-not (Test-Path (Join-Path $dest $dll))) { throw "failed to bundle $dll" }
+          }
+          "bundled $($dlls -join ', ') from $src"
 
       - name: Archive portable Windows build
         shell: pwsh
