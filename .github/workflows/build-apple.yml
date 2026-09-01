@@ -167,6 +167,121 @@ jobs:
             fi
           fi
 
+      # ── Notarized DMG for distribution OUTSIDE the App Store ────────────────
+      # The .pkg this workflow already builds is signed "3rd Party Mac Developer
+      # Installer" -- that is a Mac App Store SUBMISSION format. A user who
+      # downloads it cannot install it, and the .app inside is signed "Apple
+      # Distribution", which Gatekeeper rejects outside the Store. Direct
+      # distribution needs a different certificate entirely (Developer ID
+      # Application), Hardened Runtime, and notarization.
+      #
+      # So the app is re-signed here rather than rebuilt: same bits, different
+      # identity. Signing runs inside-out (nested code first) because codesign
+      # seals what it contains -- signing the bundle first and its frameworks
+      # after invalidates the outer signature.
+      #
+      # Must sit BEFORE "Clean up keychain": that step deletes the keychain and
+      # the provisioning profiles this needs.
+      #
+      # Skipped silently when the Developer ID secrets are unset, so a repo
+      # without them still builds everything else.
+      - name: Build notarized DMG (macOS direct distribution)
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          # Guarded here rather than in `if:` -- a step-level `env:` is not yet
+          # in scope when its own `if:` is evaluated, and the secrets context is
+          # not available there at all.
+          if [ -z "${{ secrets.APPLE_DEVELOPER_ID_PKCS12_BASE64 }}" ]; then
+            echo "No Developer ID secrets configured; skipping the DMG."
+            exit 0
+          fi
+          set -x
+          KEYCHAIN=$RUNNER_TEMP/app-signing.keychain-db
+
+          # Developer ID identity, imported into the SAME keychain the build used.
+          DEVID_P12=$RUNNER_TEMP/DeveloperID.p12
+          echo -n "${{ secrets.APPLE_DEVELOPER_ID_PKCS12_BASE64 }}" | base64 -d -o $DEVID_P12
+          security import $DEVID_P12 -P "${{ secrets.APPLE_DEVELOPER_ID_PKCS12_PASSWORD }}" -A -t cert -f pkcs12 -k $KEYCHAIN
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "" $KEYCHAIN 2>/dev/null || true
+          DEVID_CERT=$(security find-identity -v -p codesigning $KEYCHAIN | grep "Developer ID Application" | head -1 | awk -F\" '{print $2}')
+          test -n "$DEVID_CERT"
+
+          # Developer ID provisioning profiles. The NetworkExtension entitlement
+          # is restricted, so each bundle needs a profile that grants it -- the
+          # App Store profiles installed earlier do not cover direct distribution.
+          PROF_DIR=$RUNNER_TEMP/devid-profiles
+          mkdir -p "$PROF_DIR"
+          echo -n "${{ secrets.APPLE_DEVID_PROVISIONING_BASE64 }}" | base64 -d | tar -xJf - -C "$PROF_DIR"
+
+          APP_PATH=$(ls -d build/macos/Build/Products/Release/*.app)
+          APP_NAME=$(basename "$APP_PATH" .app)
+
+          # Work on a copy: the original .app may already have been turned into
+          # the TestFlight .pkg, and re-signing it would invalidate that.
+          WORK=$RUNNER_TEMP/dmgwork
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          ditto "$APP_PATH" "$WORK/$APP_NAME.app"
+          SIGN_APP="$WORK/$APP_NAME.app"
+
+          APPEX=$(find "$SIGN_APP" -name '*.appex' -maxdepth 4 | head -1 || true)
+          cp "$PROF_DIR/BuddhaJump_DevID_macOS.provisionprofile" "$SIGN_APP/Contents/embedded.provisionprofile"
+          if [ -n "$APPEX" ]; then
+            cp "$PROF_DIR/BuddhaJump_Service_DevID_macOS.provisionprofile" "$APPEX/Contents/embedded.provisionprofile"
+          fi
+
+          # Inside-out: dylibs/frameworks, then the extension, then the app.
+          # --options runtime is Hardened Runtime, which notarization requires.
+          find "$SIGN_APP" \( -name '*.dylib' -o -name '*.framework' \) -print0 |
+            xargs -0 -I{} codesign --force --timestamp --options runtime --sign "$DEVID_CERT" {}
+          if [ -n "$APPEX" ]; then
+            codesign --force --timestamp --options runtime \
+              --entitlements macos/ServiceExtension/ServiceExtension.entitlements \
+              --sign "$DEVID_CERT" "$APPEX"
+          fi
+          codesign --force --timestamp --options runtime \
+            --entitlements macos/Runner/Release.entitlements \
+            --sign "$DEVID_CERT" "$SIGN_APP"
+          codesign --verify --deep --strict --verbose=2 "$SIGN_APP"
+
+          # A drag-install DMG: the app plus a link to /Applications.
+          STAGE=$RUNNER_TEMP/dmgstage
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          ditto "$SIGN_APP" "$STAGE/$APP_NAME.app"
+          ln -s /Applications "$STAGE/Applications"
+          DMG_PATH="build/macos/${{ inputs.name }}-macos-${{ inputs.version }}.dmg"
+          rm -f "$DMG_PATH"
+          hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
+          codesign --force --timestamp --sign "$DEVID_CERT" "$DMG_PATH"
+
+          # Notarize. Without this Gatekeeper still refuses the download, and the
+          # ticket is stapled so the app opens even on a machine that is offline.
+          mkdir -p ~/private_keys
+          echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          xcrun notarytool submit "$DMG_PATH" \
+            --key ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8 \
+            --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
+            --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
+            --wait --timeout 30m
+          xcrun stapler staple "$DMG_PATH"
+          # Proof, not assumption: this is what a user's Mac will evaluate.
+          spctl -a -vvv -t install "$DMG_PATH" || true
+          rm -rf ~/private_keys
+
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload DMG to GitHub release
+        if: matrix.platform == 'macos' && env.DMG_PATH != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: ${{ env.DMG_PATH }}
+
       - name: Clean up keychain
         if: always()
         run: |
