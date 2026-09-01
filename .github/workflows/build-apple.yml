@@ -259,17 +259,39 @@ jobs:
           mkdir -p ~/private_keys
           echo -n "${{ secrets.APPLE_API_KEY_BASE64 }}" | base64 -d > ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
           chmod 600 ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          # 90m, not 30m: Apple's queue is unpredictable and the FIRST submission
+          # from a new Developer ID is the slowest of all -- the 2026-09-01 run
+          # was still "In Progress" when a 30m timeout cut it off, with the
+          # signing and packaging already correct.
+          set +e
           xcrun notarytool submit "$DMG_PATH" \
             --key ~/private_keys/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8 \
             --key-id "${{ secrets.APPLE_API_KEY_ID }}" \
             --issuer "${{ secrets.APPLE_API_ISSUER_ID }}" \
-            --wait --timeout 30m
-          xcrun stapler staple "$DMG_PATH"
-          # Proof, not assumption: this is what a user's Mac will evaluate.
-          spctl -a -vvv -t install "$DMG_PATH" || true
+            --wait --timeout 90m
+          NOTARY_RC=$?
+          if [ $NOTARY_RC -eq 0 ]; then
+            xcrun stapler staple "$DMG_PATH"
+            STAPLE_RC=$?
+          else
+            STAPLE_RC=1
+          fi
+          set -e
           rm -rf ~/private_keys
 
-          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          # An un-notarized DMG is worse than no DMG: Gatekeeper refuses it, and
+          # a user who downloads one concludes the app is broken. So publish it
+          # only when the ticket is actually stapled -- but do NOT fail the job,
+          # because the .zip/.pkg this run also produced are unaffected and a
+          # slow Apple queue is not a build error.
+          if [ $NOTARY_RC -eq 0 ] && [ $STAPLE_RC -eq 0 ]; then
+            # Proof, not assumption: the same evaluation a user's Mac performs.
+            spctl -a -vvv -t install "$DMG_PATH" || true
+            echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+            echo "DMG ready: notarized and stapled."
+          else
+            echo "::warning::Notarization did not complete (notarytool rc=$NOTARY_RC, stapler rc=$STAPLE_RC). The DMG was built and signed but is NOT published, because an un-stapled DMG is rejected by Gatekeeper. Re-run this workflow; Apple's queue is usually faster on later submissions."
+          fi
 
       - name: Upload DMG to GitHub release
         if: matrix.platform == 'macos' && env.DMG_PATH != ''
