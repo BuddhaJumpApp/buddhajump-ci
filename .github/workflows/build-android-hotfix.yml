@@ -1,0 +1,120 @@
+name: build-android-hotfix
+
+# Android-only side build for a targeted hotfix (e.g. mainland-China testers),
+# kept entirely separate from the normal all-platform build.yml pipeline.
+#
+# What makes it safe for the other platforms:
+#   - It builds and publishes ONLY the APK. No AAB, no Google Play upload, no
+#     iOS/macOS/Windows jobs.
+#   - The release it creates is make_latest:false + prerelease:true, so GitHub's
+#     "latest" pointer stays on the normal release and the dl.<domain>/android
+#     and dl.<domain>/windows workers keep resolving there for everyone else.
+#     Testers are pointed at this APK by its direct asset URL, not via dl/latest.
+#   - The version/build number is taken straight from the app's pubspec.yaml
+#     (no a*100+b*10+c recompute), so a within-version build bump like
+#     1.6.9+170 yields versionCode 170 and installs over 1.6.9+169.
+#
+# Trigger: manual only. `label` names the release tag and the APK file
+# (e.g. 1.6.9a); it does not have to be a valid Dart version.
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Release label for the tag and APK filename (e.g. 1.6.9a)'
+        required: true
+        type: string
+
+jobs:
+  build-android-hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PRIVATE_REPO }}
+          token: ${{ secrets.ORG_TOKEN }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            ${{ env.FLUTTER_HOME }}/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Read name and version from pubspec.yaml
+        id: info
+        run: |
+          set -xeuo pipefail
+          NAME=$(grep '^name:' pubspec.yaml | sed 's/name: *//' | tr -d ' ')
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: *//' | tr -d ' ')
+          echo "name=${NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building ${NAME} ${VERSION} as hotfix label '${{ inputs.label }}'"
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Check Flutter version
+        run: flutter --version
+
+      - name: Setup Android signing
+        run: |
+          echo "${{ secrets.PKCS12_BASE64 }}" | base64 -d > android/app/${{ secrets.PKCS12_NAME }}-keystore.jks
+          cat > android/key.properties << EOF
+          storePassword=${{ secrets.PKCS12_PASSWORD }}
+          keyPassword=${{ secrets.PKCS12_PASSWORD }}
+          keyAlias=${{ secrets.PKCS12_NAME }}
+          storeFile=${{ secrets.PKCS12_NAME }}-keystore.jks
+          EOF
+
+      - name: Build Android APK (no AAB, no Play)
+        run: |
+          set -xeuo pipefail
+          echo "Building ${{ steps.info.outputs.name }} ${{ steps.info.outputs.version }} (Release Mode)"
+          rm -rf .dart_tool android/.gradle
+          flutter gen-l10n
+          flutter pub run flutter_launcher_icons
+
+          flutter build apk --release \
+              --obfuscate \
+              --split-debug-info=debug-info/android \
+              --suppress-analytics \
+              --no-tree-shake-icons
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             "${{ steps.info.outputs.name }}-android-universal-v${{ inputs.label }}.apk"
+
+      - name: Publish APK to a non-latest prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ inputs.label }}
+          name: Release v${{ inputs.label }} (Android hotfix)
+          body: |
+            Android-only hotfix build. Not the latest release; the normal
+            all-platform release remains current for every other download.
+          draft: false
+          prerelease: true
+          make_latest: false
+          files: ${{ steps.info.outputs.name }}-android-universal-v${{ inputs.label }}.apk
