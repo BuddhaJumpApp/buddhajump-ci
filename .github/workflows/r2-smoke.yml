@@ -58,8 +58,8 @@ jobs:
           KEEP_TAGS: "2"
         run: |
           set -euo pipefail
-          APP="${PRIVATE_REPO:-}"; APP="${APP#*/}"
-          if [ -z "${CF_R2_TOKEN:-}" ] || [ -z "$APP" ] || [ -z "${FILE:-}" ]; then echo "R2 not configured or no file; skipping."; exit 0; fi
+          APP="${PRIVATE_REPO:-}"; APP=$(printf %s "${APP#*/}" | tr 'A-Z' 'a-z')
+          if [ -z "${CF_R2_TOKEN:-}" ] || [ -z "${CF_ACCOUNT:-}" ] || [ -z "${R2_BUCKET:-}" ] || [ -z "$APP" ] || [ -z "${FILE:-}" ]; then echo "R2 not configured or no file; skipping."; exit 0; fi
           FILE="${FILE//\\//}"
           [ -f "$FILE" ] || { echo "artifact not found: $FILE"; exit 0; }
           PY=$(command -v python3 || command -v python)
