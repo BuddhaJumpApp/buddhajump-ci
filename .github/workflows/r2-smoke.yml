@@ -1,0 +1,117 @@
+name: r2-smoke
+
+# [2026-09-07] Exercises the exact "Publish to R2" step body (see the R2 step in
+# build-android.yml / build-windows.yml / build-apple.yml and
+# XTPU/cloudflare/ci-r2-upload-step.yml) on all three runner OSes with a dummy
+# artifact under the reserved app slug "_smoke", then removes what it wrote.
+# Run it after rotating CLOUDFLARE_R2_TOKEN or touching the step. Costs nothing
+# on a public repo and never touches a real brand's objects.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: android
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    env:
+      PRIVATE_REPO: "smoke/_smoke"
+    steps:
+      - name: Make a dummy artifact
+        shell: bash
+        run: |
+          head -c 1048576 /dev/urandom > "smoke-${{ matrix.platform }}-v0.0.0+${{ github.run_id }}.bin"
+          echo "FILE=smoke-${{ matrix.platform }}-v0.0.0+${{ github.run_id }}.bin" >> "$GITHUB_ENV"
+
+      - name: Publish to R2 (dl.<brand> direct downloads)
+        continue-on-error: false
+        shell: bash
+        env:
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_R2_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          TAG: v0.0.0+${{ github.run_id }}
+          PLATFORM: ${{ matrix.platform }}
+          KEEP_TAGS: "2"
+        run: |
+          set -euo pipefail
+          APP="${PRIVATE_REPO#*/}"
+          if [ -z "${CF_R2_TOKEN:-}" ] || [ -z "${APP:-}" ] || [ -z "${FILE:-}" ]; then echo "R2 not configured or no file; skipping."; exit 0; fi
+          FILE="${FILE//\\//}"
+          [ -f "$FILE" ] || { echo "artifact not found: $FILE"; exit 0; }
+          PY=$(command -v python3 || command -v python)
+          case "$PLATFORM" in
+            android) CT=application/vnd.android.package-archive;;
+            windows) CT=application/zip;;
+            macos)   CT=application/x-apple-diskimage;;
+            *) echo "unknown PLATFORM=$PLATFORM"; exit 0;;
+          esac
+          API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/$R2_BUCKET"
+          enc() { "$PY" -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe="/"))' "$1"; }
+          NAME=$(basename "$FILE"); KEY="$APP/$TAG/$NAME"
+          SIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE")
+          SHA=$( (sha256sum "$FILE" 2>/dev/null || shasum -a 256 "$FILE") | cut -d' ' -f1)
+          curl -fsS -X PUT "$API/objects/$(enc "$KEY")" -H "Authorization: Bearer $CF_R2_TOKEN" -H "Content-Type: $CT" --upload-file "$FILE" -m 1200 >/dev/null
+          printf '{"tag":"%s","key":"%s","size":%s,"sha256":"%s","content_type":"%s","published_at":"%s","source":"github-actions %s"}\n' \
+            "$TAG" "$KEY" "$SIZE" "$SHA" "$CT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_RUN_ID" > r2-manifest.json
+          curl -fsS -X PUT "$API/objects/$(enc "$APP/latest/$PLATFORM.json")" -H "Authorization: Bearer $CF_R2_TOKEN" -H "Content-Type: application/json" --upload-file r2-manifest.json >/dev/null
+          echo "R2: $KEY ($((SIZE/1048576)) MB) + $APP/latest/$PLATFORM.json"
+          curl -fsS "$API/objects?prefix=$(enc "$APP/")&per_page=1000" -H "Authorization: Bearer $CF_R2_TOKEN" > r2-listing.json
+          "$PY" - "$APP" "$TAG" "$KEEP_TAGS" > r2-prune.txt <<'PYEOF'
+          import json,sys,collections
+          app,newtag,keep=sys.argv[1],sys.argv[2],int(sys.argv[3])
+          objs=json.load(open("r2-listing.json")).get("result",[])
+          bytag=collections.defaultdict(list); newest={}
+          for o in objs:
+              parts=o["key"].split("/")
+              if len(parts)<3 or parts[1]=="latest": continue
+              bytag[parts[1]].append(o["key"]); newest[parts[1]]=max(newest.get(parts[1],""),o.get("uploaded",""))
+          newest[newtag]="9999"
+          for t in sorted(bytag,key=lambda t:newest[t],reverse=True)[keep:]:
+              for k in bytag[t]: print(k)
+          PYEOF
+          while read -r k; do [ -z "$k" ] && continue; curl -fsS -X DELETE "$API/objects/$(enc "$k")" -H "Authorization: Bearer $CF_R2_TOKEN" >/dev/null && echo "pruned $k"; done < r2-prune.txt
+
+      - name: Verify what landed
+        shell: bash
+        env:
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_R2_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/$R2_BUCKET"
+          curl -fsS "$API/objects/_smoke/latest/$PLATFORM.json" -H "Authorization: Bearer $CF_R2_TOKEN" | tee manifest.json
+          PY=$(command -v python3 || command -v python)
+          "$PY" -c 'import json,sys; m=json.load(open("manifest.json")); assert m["size"]==1048576, m; assert m["tag"].endswith(sys.argv[1]), m; print("manifest ok:", m["key"])' "${{ github.run_id }}"
+
+  cleanup:
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove everything under _smoke/
+        shell: bash
+        env:
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_R2_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/$R2_BUCKET"
+          curl -fsS "$API/objects?prefix=_smoke/&per_page=1000" -H "Authorization: Bearer $CF_R2_TOKEN" \
+            | python3 -c 'import json,sys;[print(o["key"]) for o in json.load(sys.stdin)["result"]]' \
+            | while read -r k; do curl -fsS -X DELETE "$API/objects/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe="/"))' "$k")" -H "Authorization: Bearer $CF_R2_TOKEN" >/dev/null && echo "deleted $k"; done
