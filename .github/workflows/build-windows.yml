@@ -155,6 +155,95 @@ jobs:
           overwrite_files: true
           files: ${{ env.WINDOWS_ZIP }}
 
+
+      # [2026-09-07] Mirror the artifact into the fjolsky-downloads R2 bucket so
+      # dl.<brand>/windows serves it from our own account (the Worker falls back
+      # to this GitHub release only while R2 has no manifest). Additive:
+      # continue-on-error, never blocks the release. Secrets: CLOUDFLARE_ACCOUNT_ID,
+      # CLOUDFLARE_R2_TOKEN (R2-only token), R2_BUCKET. The app slug is the part of
+      # PRIVATE_REPO after the slash (NOT inputs.name, which is vpn00000 for
+      # 00000vpn). Keeps the two newest tags per app plus anything a latest/*.json
+      # still points at, so the bucket stays inside the R2 free tier. A re-run of an
+      # OLD release uploads its object but never repoints dl.* backwards.
+      # Source of truth: XTPU/cloudflare/ci-r2-upload-step.yml.
+      - name: Publish to R2 (dl.<brand> direct downloads)
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: bash
+        env:
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_R2_TOKEN: ${{ secrets.CLOUDFLARE_R2_TOKEN }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          TAG: ${{ inputs.version }}
+          PLATFORM: windows
+          FILE: ${{ env.WINDOWS_ZIP }}
+          KEEP_TAGS: "2"
+        run: |
+          set -euo pipefail
+          APP="${PRIVATE_REPO:-}"; APP=$(printf %s "${APP#*/}" | tr 'A-Z' 'a-z')
+          if [ -z "${CF_R2_TOKEN:-}" ] || [ -z "${CF_ACCOUNT:-}" ] || [ -z "${R2_BUCKET:-}" ] || [ -z "$APP" ] || [ -z "${FILE:-}" ]; then echo "R2 not configured or no file; skipping."; exit 0; fi
+          FILE="${FILE//\\//}"
+          [ -f "$FILE" ] || { echo "artifact not found: $FILE"; exit 0; }
+          PY=$(command -v python3 || command -v python)
+          case "$PLATFORM" in
+            android) CT=application/vnd.android.package-archive;;
+            windows) CT=application/zip;;
+            macos)   CT=application/x-apple-diskimage;;
+            *) echo "unknown PLATFORM=$PLATFORM"; exit 0;;
+          esac
+          API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/r2/buckets/$R2_BUCKET"
+          AUTH="Authorization: Bearer $CF_R2_TOKEN"
+          enc() { "$PY" -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe="/"))' "$1" | tr -d '\r'; }
+          NAME=$(basename "$FILE"); KEY="$APP/$TAG/$NAME"
+          SIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE")
+          SHA=$( (sha256sum "$FILE" 2>/dev/null || shasum -a 256 "$FILE") | cut -d' ' -f1)
+          # 1) the bytes
+          curl -fsS -m 1200 -X PUT "$API/objects/$(enc "$KEY")" -H "$AUTH" -H "Content-Type: $CT" --upload-file "$FILE" >/dev/null
+          echo "R2: uploaded $KEY ($((SIZE/1048576)) MB)"
+          # 2) the manifest -- unless the one already there points at a NEWER tag
+          curl -fsS -m 120 "$API/objects/$(enc "$APP/latest/$PLATFORM.json")" -H "$AUTH" -o r2-current.json 2>/dev/null || echo '{}' > r2-current.json
+          if "$PY" - "$TAG" <<'PYEOF'
+          import json,re,sys
+          def v(t):
+              m=re.match(r"v?(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?$",t or ""); return tuple(int(x or 0) for x in m.groups()) if m else None
+          try: cur=json.load(open("r2-current.json")).get("tag")
+          except Exception: cur=None
+          new=sys.argv[1]
+          sys.exit(1 if (v(cur) and v(new) and v(cur)>v(new)) else 0)
+          PYEOF
+          then
+            printf '{"tag":"%s","key":"%s","size":%s,"sha256":"%s","content_type":"%s","published_at":"%s","source":"github-actions %s"}\n' \
+              "$TAG" "$KEY" "$SIZE" "$SHA" "$CT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_RUN_ID" > r2-manifest.json
+            curl -fsS -m 120 -X PUT "$API/objects/$(enc "$APP/latest/$PLATFORM.json")" -H "$AUTH" -H "Content-Type: application/json" --upload-file r2-manifest.json >/dev/null
+            echo "R2: $APP/latest/$PLATFORM.json -> $TAG"
+          else
+            echo "R2: NOT repointing $APP/latest/$PLATFORM.json (it points at a newer tag than $TAG); object uploaded only"
+          fi
+          # 3) prune: keep the KEEP_TAGS newest tags (by last_modified) plus every tag a latest/*.json references
+          curl -fsS -m 120 "$API/objects?prefix=$(enc "$APP/")&per_page=1000" -H "$AUTH" > r2-listing.json
+          for p in android windows macos; do curl -fsS -m 120 "$API/objects/$(enc "$APP/latest/$p.json")" -H "$AUTH" -o "r2-ref-$p.json" 2>/dev/null || echo '{}' > "r2-ref-$p.json"; done
+          "$PY" - "$APP" "$TAG" "$KEEP_TAGS" > r2-prune.txt <<'PYEOF'
+          import json,sys,collections
+          app,newtag,keep=sys.argv[1],sys.argv[2],int(sys.argv[3])
+          objs=json.load(open("r2-listing.json")).get("result",[])
+          protected={newtag}
+          for p in ("android","windows","macos"):
+              try: t=json.load(open("r2-ref-%s.json"%p)).get("tag")
+              except Exception: t=None
+              if t: protected.add(t)
+          bytag=collections.defaultdict(list); newest={}
+          for o in objs:
+              parts=o["key"].split("/")
+              if len(parts)<3 or parts[1]=="latest": continue
+              ts=o.get("last_modified") or o.get("uploaded") or ""
+              bytag[parts[1]].append(o["key"]); newest[parts[1]]=max(newest.get(parts[1],""),ts)
+          order=sorted(bytag,key=lambda t:(t in protected,newest[t]),reverse=True)
+          for t in order[keep:]:
+              if t in protected: continue
+              for k in bytag[t]: print(k)
+          PYEOF
+          while read -r k; do k="${k%$'\r'}"; [ -z "$k" ] && continue; curl -fsS -m 120 -X DELETE "$API/objects/$(enc "$k")" -H "$AUTH" >/dev/null && echo "pruned $k" || echo "prune skipped $k"; done < r2-prune.txt
+
       - name: Compose MSIX env
         if: inputs.build_store_package || inputs.publish_to_stores
         shell: bash
