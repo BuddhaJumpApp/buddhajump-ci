@@ -282,7 +282,7 @@ Worker 源码（`XTPU/cloudflare/workers/app-downloads.js`，本地副本核对�
 16. **端点发现只在 BuddhaJump 是活代码**：源码仓库 `lib/constants.dart:24-41` 把 `apiBaseUrl` 默认值刻意留空并解释了原因；kamevpn `lib/constants.dart:22-25` 默认值是 `https://api.fjolskylduoryggisverndar.com`，`lib/network.dart:171-174` 和 `lib/pages/landing.dart:119` 都以 `apiBaseUrl.isNotEmpty` 走「显式配置」分支，跳过 bit.ly → GitHub 的发现链。
 17. **Android 日志回调的 JNI 线程附着**：源码仓库 `android/app/src/main/kotlin/com/fjolsky/buddhajump/bg/VPNService.kt:50, 100, 170` 引入并使用 `com.sun.jna.CallbackThreadInitializer`，注释说明了没有它时每条日志回调都 attach/detach 线程的问题。服务端那一半见 §12。
 18. **Actions 分钟数**：两个账号都是 Free 计划，公开仓库不计费。2026-09-07 用 `gh api` 按 GitHub 的倍率（macOS ×10、Windows ×2、每 job 向上取整到分钟）统计 30 天：本仓库 78 次运行折合 6498 计费分钟；一个 fork 一次四平台 `build` 折合 ≈132–143 分钟（aiglefree-ci：6 次 790 分钟）。转私有前先算清楚。
-19. **maskaura-ci 的公开 Release URL 被写进了杀软误报申诉材料**（本地文件 `project/fjolsky/maskaura-false-positive-submission.md`，引用 `https://github.com/BuddhaJumpApp/maskaura-ci/releases` 作为「CI 从源码直接构建」的证明）。ci 仓库转私有或改名会让这类举证失效。
+19. **maskaura-ci 的公开 Release URL 被写进了杀软误报申诉材料**（本地文件 `project/fjolsky/maskaura-false-positive-submission.md`，引用 `https://github.com/fjolskylduoryggisverndar/maskaura-ci/releases` 作为「CI 从源码直接构建」的证明）。ci 仓库转私有或改名会让这类举证失效。
 
 ---
 
