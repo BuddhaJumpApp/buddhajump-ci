@@ -218,12 +218,13 @@ jobs:
           DMG_TUNNEL: ${{ inputs.dmg_tunnel }}
           TEAM_ID: YL6HJ6PT47
           # [2026-09-09 v1.8.0] The Developer ID copy is a SEPARATE app from the App Store one:
-          # bundle id <app id>.direct, display name 佛跳牆, Team-ID app group -- so TestFlight
+          # bundle id <app id>.direct, display name BuddhaJumpWall, Team-ID app group -- so TestFlight
           # and the .dmg can be installed side by side (same bundle id = same app to macOS,
           # and TestFlight refused to install over the .dmg copy). was: APP_GROUP: group.com.fjolsky.buddhajump
           APP_GROUP: YL6HJ6PT47.group.com.fjolsky.buddhajump
           DIRECT_SUFFIX: direct
-          DIRECT_APP_NAME: 佛跳牆
+          # [2026-09-09 v1.8.1] was: 佛跳牆 (owner renamed it)
+          DIRECT_APP_NAME: BuddhaJumpWall
         run: |
           set -euo pipefail
           # Guarded here rather than in `if:` -- a step-level `env:` is not yet
@@ -275,8 +276,8 @@ jobs:
           #   fi
 
           # ── [2026-09-09 v1.8.0] 0. Re-identify the copy as the direct-download app ──
-          # CFBundleIdentifier <app id>.direct, name/display name 佛跳牆, bundle folder
-          # 佛跳牆.app. FlutterBridge derives the sysex id and app group from the bundle
+          # CFBundleIdentifier <app id>.direct, name/display name BuddhaJumpWall, bundle folder
+          # BuddhaJumpWall.app. FlutterBridge derives the sysex id and app group from the bundle
           # id at runtime and Dart asks it which channel it is (Stripe instead of Apple
           # IAP), so nothing else in the app needs to know. The executable name and the
           # .dmg file name (buddhajump-macos-<tag>.dmg, what dl.* serves) stay as they are.
