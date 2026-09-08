@@ -280,7 +280,11 @@ jobs:
           rm -rf "$SYSEX_DD"
           xcodebuild -list -project macos/Runner.xcodeproj | grep -q 'SystemTunnel' \
             || { echo "::error::macos/Runner.xcodeproj has no SystemTunnel target (app repo too old for the sysex DMG)"; exit 1; }
-          xcodebuild -project macos/Runner.xcodeproj -target SystemTunnel -configuration Release \
+          # -scheme, not -target: xcodebuild refuses -derivedDataPath with -target
+          # ("The flag -scheme ... is required when specifying -derivedDataPath",
+          # first run 2026-09-08). SystemTunnel.xcscheme is shared in the app repo.
+          xcodebuild -project macos/Runner.xcodeproj -scheme SystemTunnel -configuration Release \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath "$SYSEX_DD" ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             COMPILER_INDEX_STORE_ENABLE=NO build
