@@ -32,6 +32,16 @@ on:
         required: false
         default: false
         type: boolean
+      # [2026-09-09 v1.7.5] macOS Developer ID DMG: 'sysex' (System Extension
+      # tunnel, default) or 'skip' (build no DMG this run).
+      dmg_tunnel:
+        description: "macOS Developer ID DMG: 'sysex' (default) or 'skip' (no DMG this run)"
+        required: false
+        default: 'sysex'
+        type: choice
+        options:
+          - sysex
+          - skip
 
 jobs:
   check-for-version:
@@ -88,4 +98,6 @@ jobs:
       publish_to_stores: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_stores || false }}
       publish_ios_testflight: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ios_testflight || false }}
       publish_macos_testflight: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_macos_testflight || false }}
+      # [2026-09-09 v1.7.5] repository_dispatch (pubspec bump) runs get the default.
+      dmg_tunnel: ${{ github.event_name == 'workflow_dispatch' && inputs.dmg_tunnel || 'sysex' }}
     secrets: inherit
