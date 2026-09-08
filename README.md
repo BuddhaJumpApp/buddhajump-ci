@@ -123,7 +123,8 @@ job 声明了 `outputs.submission-success`（`:40-41`），但 `build.yml` 没�
 6. **Build notarized DMG（仅 macOS job，本仓库独有）**（`:170-305`）：
    - 若 `APPLE_DEVELOPER_ID_PKCS12_BASE64` 为空则直接跳过（`:195-198`）。
    - 导入 Developer ID Application 证书；解出 `APPLE_DEVID_PROVISIONING_BASE64` 里的 profile，**文件名写死为 `BuddhaJump_DevID_macOS.provisionprofile` 和 `BuddhaJump_Service_DevID_macOS.provisionprofile`**（`:228, 230`）——移植到别的品牌必须改。
-   - 在 `.app` 的副本上由内向外重签（dylib/framework → `*.appex` → app），Hardened Runtime，entitlements 用 `macos/ServiceExtension/ServiceExtension.entitlements` 和 `macos/Runner/Release.entitlements`（`:233-245`）。
+   - **【2026-09-09 v1.7.5 起】** 先用 `xcodebuild -target SystemTunnel` 编译源码仓库的 System Extension（不签名），在 `.app` 的副本里**删掉** `PlugIns/ServiceExtension.appex`、放入 `Contents/Library/SystemExtensions/io.fjolskylduoryggisverndar.buddhajump.systemtunnel.systemextension`，按**内容**（application-identifier + 授权项）从 `APPLE_DEVID_PROVISIONING_BASE64` 里挑两张 DevID profile 嵌入，再由内向外重签（dylib/framework → sysex（`macos/SystemTunnel/SystemTunnel.entitlements`）→ app（`macos/Runner/DeveloperID.entitlements`）），Hardened Runtime。之后逐项核验 SYSX/NEProviderClasses/版本一致/架构一致/entitlements 与 profile 匹配，**任一不符就 exit 1**（步骤 `continue-on-error`，job 末尾「Fail the job if the DMG step failed」再把 run 标红，商店上传不受影响）。旧的 appex 重签路径保留为注释。
+   - 原因：Developer ID 分发的 macOS packet-tunnel 只能是 System Extension，appex 会被 `neagent` 在运行时拒绝（09-02 定案，09-09 落地）。`dmg_tunnel=skip` 可跳过整段。
    - `hdiutil` 做拖拽安装 DMG，`notarytool submit --wait --timeout 90m`（`:266-271`；注释：30m 曾在 2026-09-01 被 Apple 队列拖死），成功才 `stapler staple`，**未公证成功就不发布 DMG 但也不让 job 失败**（`:287-294`）。
    - 上传 Release 的条件是 `env.DMG_PATH != ''`（`:296-305`）。
 7. 清 keychain 和 profile（`:307-311`，`if: always()`）。
@@ -271,8 +272,8 @@ Worker 源码（`XTPU/cloudflare/workers/app-downloads.js`，本地副本核对�
 5. **Windows 构建不跑 `gen-l10n`**（§4.2 第 3 点）：源码仓库必须把 `lib/l10n/app_localizations*.dart` 生成物一起提交（源码仓库里它们确实是 git 跟踪的：`git ls-files lib/l10n` 列出 `.arb` 和 `app_localizations*.dart`，`l10n.yaml` 的 `output-dir: lib/l10n`）。只改 `.arb` 不提交生成物，Android/Apple 在 CI 现场重生成能过，Windows 就用旧字符串。
 6. **VC++ 运行库必须随包发**（`build-windows.yml:109-139`），本地测不出来，别删这步。
 7. **macOS 公证要等**：`--timeout 90m`（`build-apple.yml:271`），macOS job 可能跑一个半小时以上；没等到不会失败但 DMG 不会发布，重跑即可。
-8. **DMG 段写死了 BuddhaJump 的 profile 文件名**（`build-apple.yml:228, 230`）。
-9. **DMG 段签的是 `*.appex`**（`build-apple.yml:227-241`），源码仓库 `macos/` 下也只有 `ServiceExtension` 目录、没有 System Extension target——见 §12 第 8 条的运维记忆。
+8. ~~**DMG 段写死了 BuddhaJump 的 profile 文件名**~~ 2026-09-09 起按 profile 内容（application-identifier / 授权项）挑选，不再依赖文件名。
+9. ~~**DMG 段签的是 `*.appex`**~~ **已于 2026-09-09（v1.7.5）改为 System Extension**：源码仓库新增 `macos/SystemTunnel` target，DMG 段改为 sysex 装配与重签（见 §4.3 第 6 步）。
 10. **macOS 主 App 不能带 `com.apple.security.network.server`**：源码仓库 `macos/Runner/Release.entitlements:9-32` 的注释记录了 2026-08-27 被 ASC 自动审核拒绝的原文，并说明该权限只留在 `ServiceExtension.entitlements:16`，主 App 已注释掉。
 11. **Android JNA 两层锁**：源码仓库 `android/app/build.gradle.kts:99` 固定 `net.java.dev.jna:jna:5.17.0@aar`，`android/app/proguard-rules.pro:25-38` 有 `-keep class com.sun.jna.** { *; }` 等规则，注释（`:18-21`）记录了 R8 重命名 `Pointer#peer` 导致 `libjnidispatch.so` 找不到符号的崩溃。CI 用 `--obfuscate` 和 release 构建（`build.gradle.kts:63` 的 `proguardFiles`），两层缺一不可。
 12. **Win32 `Create()` 会先跑一次 `OnDestroy()`**：源码仓库 `windows/runner/flutter_window.cpp:91-106` 的注释和 `if (flutter_controller_ || flutter_bridge_)` 守卫就是修复；1.5.5–1.5.9 每次启动第 6 秒被 `TerminateProcess` 杀掉。改 Windows runner 时别动那个守卫。
@@ -292,7 +293,7 @@ Worker 源码（`XTPU/cloudflare/workers/app-downloads.js`，本地副本核对�
 
 1. `ORG_TOKEN` 是 classic PAT（代码只能看出是 checkout 用的 token）。
 2. 用 shell heredoc 写 Dart 文件会把 `$` 转义掉，曾发出连不上的包（1.5.4–1.5.6）。源码里没有留下相关注释。
-3. Developer ID 直发的 macOS VPN 必须用 System Extension 而不是 appex，appex 在运行时被 `neagent` 拒绝——这意味着 §4.3 第 6 步产出的 DMG 可能装上了也连不上。代码只能证明它签的是 appex。
+3. Developer ID 直发的 macOS VPN 必须用 System Extension 而不是 appex，appex 在运行时被 `neagent` 拒绝。**2026-09-09（v1.7.5）起 DMG 已改为 sysex**；首次运行用户要在「系统设置」允许扩展，App 必须位于 /Applications。
 4. 版本号规则：补丁位 +1，到 9 后进位次版本号。仓库里没有任何脚本或注释体现。
 5. Play 内部测试轨道的测试者只能在 Play Console 手点，API 加不了。`build-android.yml:123-127` 只说明了为什么选 internal 轨道。
 6. Android 上引擎日志由 hydra 下发的配置关闭（服务端 v1.8.11）。本仓库和客户端代码里只有客户端那一半（§11 第 17 条）。

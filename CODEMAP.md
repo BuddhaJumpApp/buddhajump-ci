@@ -73,8 +73,8 @@
      - `APPLE_DEVELOPER_ID_PKCS12_BASE64` 为空 → `exit 0`（`:195-198`；注释 `:192-194` 解释为何不能放在 `if:` 里）。
      - 导入 Developer ID 证书到同一 keychain，`find-identity -p codesigning | grep "Developer ID Application"`（`:200-208`）。
      - `APPLE_DEVID_PROVISIONING_BASE64` 解到 `$RUNNER_TEMP/devid-profiles`（`:213-215`）。
-     - 复制 `.app` 到 `$RUNNER_TEMP/dmgwork`（`:217-225`）；找 `*.appex`；**写死** `BuddhaJump_DevID_macOS.provisionprofile` / `BuddhaJump_Service_DevID_macOS.provisionprofile`（`:227-231`）。
-     - 由内向外 `codesign --force --timestamp --options runtime`：dylib/framework → appex（entitlements `macos/ServiceExtension/ServiceExtension.entitlements`）→ app（`macos/Runner/Release.entitlements`）；`codesign --verify --deep --strict`（`:233-245`）。
+     - 复制 `.app` 到 `$RUNNER_TEMP/dmgwork`；**【2026-09-09 v1.7.5】** `xcodebuild -target SystemTunnel` 编译 sysex → 删 appex、放入 `Contents/Library/SystemExtensions/` → 按内容挑 DevID profile（app 须含 `system-extension.install`，sysex 须含 `packet-tunnel-provider-systemextension`）；旧的「找 `*.appex` + 写死 profile 文件名」保留为注释。
+     - 由内向外 `codesign --force --timestamp --options runtime`：dylib/framework → sysex（`macos/SystemTunnel/SystemTunnel.entitlements`）→ app（`macos/Runner/DeveloperID.entitlements`）；随后核验 entitlements/profile/SYSX/版本/架构，不符即 `exit 1`（步骤 `continue-on-error`，末尾「Fail the job if the DMG step failed」标红）；`codesign --verify --deep --strict`（`:233-245`）。
      - `hdiutil create -format UDZO` → `build/macos/<name>-macos-<version>.dmg`，签 DMG（`:247-255`）。
      - 写 ASC key 到 `~/private_keys/AuthKey_<APPLE_API_KEY_ID>.p8`；`xcrun notarytool submit --wait --timeout 90m`（`:259-271`，注释 `:262-265` 记录 30m 被 2026-09-01 的队列拖死）；成功则 `stapler staple`；`rm -rf ~/private_keys`（`:272-280`）。
      - 两个 rc 都为 0 才 `spctl -a -t install` 验证并写 `DMG_PATH`，否则 `::warning::` 且**不失败**（`:287-294`）。
