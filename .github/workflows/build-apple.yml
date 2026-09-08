@@ -283,7 +283,8 @@ jobs:
           # -scheme, not -target: xcodebuild refuses -derivedDataPath with -target
           # ("The flag -scheme ... is required when specifying -derivedDataPath",
           # first run 2026-09-08). SystemTunnel.xcscheme is shared in the app repo.
-          xcodebuild -project macos/Runner.xcodeproj -scheme SystemTunnel -configuration Release \
+          # -workspace mirrors `flutter build macos` (same SwiftPM package resolution path).
+          xcodebuild -workspace macos/Runner.xcworkspace -scheme SystemTunnel -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$SYSEX_DD" ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
