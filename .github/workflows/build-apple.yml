@@ -305,6 +305,11 @@ jobs:
           fi
           [ "$(basename "$SYSEX_BUILT")" = "$SYSEX_ID.systemextension" ] || { echo "::error::sysex product is '$(basename "$SYSEX_BUILT")'; must be '<bundle id>.systemextension'"; exit 1; }
           test -f "$SYSEX_BUILT/Contents/Frameworks/librainbox.dylib" || { echo "::error::sysex has no Contents/Frameworks/librainbox.dylib -- engine not embedded"; exit 1; }
+          # [v1.7.6] the extension seeds its rule-sets from its own bundle (root cannot read the
+          # user's App Group container); a build without them would start and then fail on
+          # every "rules/<file>.srs" the config references.
+          RULES_N=$(ls "$SYSEX_BUILT/Contents/Resources/rules"/*.srs 2>/dev/null | wc -l | tr -d ' ')
+          [ "${RULES_N:-0}" -ge 30 ] || { echo "::error::sysex bundles only ${RULES_N:-0} rule-sets under Contents/Resources/rules (expected >= 30)"; exit 1; }
           SYSEX_VER=$($PB -c 'Print :CFBundleShortVersionString' "$SYSEX_BUILT/Contents/Info.plist")
           SYSEX_BUILD=$($PB -c 'Print :CFBundleVersion' "$SYSEX_BUILT/Contents/Info.plist")
           if [ "$SYSEX_VER/$SYSEX_BUILD" != "$APP_VER/$APP_BUILD" ]; then
