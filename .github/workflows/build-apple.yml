@@ -217,7 +217,13 @@ jobs:
         env:
           DMG_TUNNEL: ${{ inputs.dmg_tunnel }}
           TEAM_ID: YL6HJ6PT47
-          APP_GROUP: group.com.fjolsky.buddhajump
+          # [2026-09-09 v1.8.0] The Developer ID copy is a SEPARATE app from the App Store one:
+          # bundle id <app id>.direct, display name 佛跳牆, Team-ID app group -- so TestFlight
+          # and the .dmg can be installed side by side (same bundle id = same app to macOS,
+          # and TestFlight refused to install over the .dmg copy). was: APP_GROUP: group.com.fjolsky.buddhajump
+          APP_GROUP: YL6HJ6PT47.group.com.fjolsky.buddhajump
+          DIRECT_SUFFIX: direct
+          DIRECT_APP_NAME: 佛跳牆
         run: |
           set -euo pipefail
           # Guarded here rather than in `if:` -- a step-level `env:` is not yet
@@ -268,11 +274,26 @@ jobs:
           #     cp "$PROF_DIR/BuddhaJump_Service_DevID_macOS.provisionprofile" "$APPEX/Contents/embedded.provisionprofile"
           #   fi
 
+          # ── [2026-09-09 v1.8.0] 0. Re-identify the copy as the direct-download app ──
+          # CFBundleIdentifier <app id>.direct, name/display name 佛跳牆, bundle folder
+          # 佛跳牆.app. FlutterBridge derives the sysex id and app group from the bundle
+          # id at runtime and Dart asks it which channel it is (Stripe instead of Apple
+          # IAP), so nothing else in the app needs to know. The executable name and the
+          # .dmg file name (buddhajump-macos-<tag>.dmg, what dl.* serves) stay as they are.
+          PB=/usr/libexec/PlistBuddy
+          STORE_APP_ID=$($PB -c 'Print :CFBundleIdentifier' "$SIGN_APP/Contents/Info.plist")
+          $PB -c "Set :CFBundleIdentifier $STORE_APP_ID.$DIRECT_SUFFIX" "$SIGN_APP/Contents/Info.plist"
+          $PB -c "Set :CFBundleName $DIRECT_APP_NAME" "$SIGN_APP/Contents/Info.plist" || $PB -c "Add :CFBundleName string $DIRECT_APP_NAME" "$SIGN_APP/Contents/Info.plist"
+          $PB -c "Set :CFBundleDisplayName $DIRECT_APP_NAME" "$SIGN_APP/Contents/Info.plist" || $PB -c "Add :CFBundleDisplayName string $DIRECT_APP_NAME" "$SIGN_APP/Contents/Info.plist"
+          mv "$SIGN_APP" "$WORK/$DIRECT_APP_NAME.app"
+          SIGN_APP="$WORK/$DIRECT_APP_NAME.app"
+          APP_NAME="$DIRECT_APP_NAME"
+          [ "$($PB -c 'Print :CFBundleIdentifier' "$SIGN_APP/Contents/Info.plist")" = "$STORE_APP_ID.$DIRECT_SUFFIX" ] || { echo "::error::failed to re-identify the direct copy"; exit 1; }
+
           # ── [2026-09-09 v1.7.5] 1. Build the SystemTunnel target (unsigned here; signed
           # below with the same inside-out codesign the rest of the bundle gets). A
           # separate derived-data dir keeps build/macos/Build/Products/Release, where the
           # .pkg and this copy come from, byte-identical to today. ──
-          PB=/usr/libexec/PlistBuddy
           APP_ID=$($PB -c 'Print :CFBundleIdentifier' "$SIGN_APP/Contents/Info.plist")
           APP_VER=$($PB -c 'Print :CFBundleShortVersionString' "$SIGN_APP/Contents/Info.plist")
           APP_BUILD=$($PB -c 'Print :CFBundleVersion' "$SIGN_APP/Contents/Info.plist")
