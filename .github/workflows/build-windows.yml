@@ -265,7 +265,18 @@ jobs:
           set -xeuo pipefail
           DISPLAY_NAME="${{ secrets.PARTNER_APP }}"
           DISPLAY_NAME="${DISPLAY_NAME##*.}"
+          # [2026-09-10] --build-windows false: package the Release dir the
+          # "Build Windows app" step above already produced (obfuscated, split
+          # debug info, --no-tree-shake-icons, VC++ DLLs beside the exe).
+          # Without it msix:create runs its own `flutter build windows --release`
+          # WITH icon tree-shaking, and the const finder does not see the app's
+          # `FontAwesomeIcons.x.data` / `static final IconData` icons, so the
+          # store package shipped Font-Awesome-Brands at 5.6 KB (215 KB in the
+          # zip), Solid at 9.8 KB (415 KB) and MaterialIcons at 11.6 KB (1.6 MB):
+          # Alipay / WeChat / Visa / MC / Amex and the connect-state icons
+          # rendered as tofu boxes in 1.8.2 and 1.8.3 MSIX builds.
           dart run msix:create \
+            --build-windows false \
             -e "internetClient, privateNetworkClientServer" \
             -d "${DISPLAY_NAME}" \
             -l "assets/logo.png" \
